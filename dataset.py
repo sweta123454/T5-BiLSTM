@@ -1,0 +1,144 @@
+import random
+import nltk
+import pandas as pd
+import numpy as np
+from nltk.corpus import wordnet
+from nltk.tokenize import sent_tokenize, word_tokenize
+from tqdm import tqdm
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import jaccard_score
+
+# Download required NLTK resources
+nltk.download('punkt')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+# Load original dataset
+df = pd.read_csv("/content/SQuAD-v1.1.csv")
+
+# Keep only unique context paragraphs
+unique_paragraphs = df["context"].dropna().drop_duplicates()
+contexts = list(unique_paragraphs)
+
+# Load GloVe embeddings
+def load_glove_embeddings(path):
+    embeddings = {}
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            values = line.strip().split()
+            word = values[0]
+            vector = np.asarray(values[1:], dtype='float32')
+            embeddings[word] = vector
+    return embeddings
+
+glove_path = "/content/glove.6B.300d.txt"  # Change path if needed
+glove = load_glove_embeddings(glove_path)
+
+# Sentence embedding using GloVe
+def embed_sentence(sentence):
+    words = word_tokenize(sentence.lower())
+    vectors = [glove[word] for word in words if word in glove]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(300)
+
+def cosine_similarity_glove(a, b):
+    a_vec = embed_sentence(a)
+    b_vec = embed_sentence(b)
+    if np.linalg.norm(a_vec) == 0 or np.linalg.norm(b_vec) == 0:
+        return 0.0
+    return np.dot(a_vec, b_vec) / (np.linalg.norm(a_vec) * np.linalg.norm(b_vec))
+
+# Jaccard similarity using TF-IDF (binary presence)
+def jaccard_similarity_tfidf(a, b, tfidf_vectorizer):
+    X = tfidf_vectorizer.transform([a, b])
+    vec1 = (X[0] > 0).astype(int).toarray()[0]
+    vec2 = (X[1] > 0).astype(int).toarray()[0]
+    if np.sum(vec1 | vec2) == 0:
+        return 0.0
+    return jaccard_score(vec1, vec2)
+
+# Augmentation functions
+def synonym_replacement(text, prob=0.3):
+    words = word_tokenize(text)
+    new_words = []
+    for word in words:
+        syns = wordnet.synsets(word)
+        if syns and random.random() < prob:
+            lemmas = syns[0].lemma_names()
+            if lemmas:
+                word = lemmas[0].replace("_", " ")
+        new_words.append(word)
+    return ' '.join(new_words)
+
+def remove_sentence(text):
+    sents = sent_tokenize(text)
+    if len(sents) > 1:
+        sents.pop(random.randint(0, len(sents)-1))
+    return ' '.join(sents)
+
+def inject_typo(text, prob=0.3):
+    words = word_tokenize(text)
+    def misspell(w):
+        if len(w) > 4 and random.random() < prob:
+            i = random.randint(0, len(w)-2)
+            return w[:i] + w[i+1] + w[i] + w[i+2:]
+        return w
+    return ' '.join(misspell(w) for w in words)
+
+# Alpha weights for USI
+def get_dynamic_alpha(aug_type):
+    alpha_map = {
+        "paraphrased": 0.3,
+        "typo": 0.2,
+        "semantic": 0.4,
+        "semantic_dissimilar": 0.7,
+        "dissimilar": 0.8,
+        "duplicate": 0.5,
+        "mixed": 0.6
+    }
+    return alpha_map.get(aug_type, 0.5)
+
+# Fit TF-IDF once on unique paragraphs
+tfidf_vectorizer = TfidfVectorizer(binary=True)
+tfidf_vectorizer.fit(contexts)
+
+# Augmentation loop
+augmentation_types = ['duplicate', 'dissimilar', 'semantic', 'semantic_dissimilar', 'typo', 'mixed']
+rows = []
+
+for idx, para in enumerate(tqdm(contexts, desc="Generating augmented data")):
+    aug_type = random.choice(augmentation_types)
+
+    if aug_type == "duplicate":
+        aug = para
+    elif aug_type == "dissimilar":
+        aug = remove_sentence(para)
+    elif aug_type == "semantic":
+        aug = synonym_replacement(para, prob=0.3)
+    elif aug_type == "semantic_dissimilar":
+        aug = synonym_replacement(para, prob=0.9)
+    elif aug_type == "typo":
+        aug = inject_typo(para)
+    elif aug_type == "mixed":
+        aug = inject_typo(synonym_replacement(remove_sentence(para)))
+
+    cosine = cosine_similarity_glove(para, aug)
+    jaccard = jaccard_similarity_tfidf(para, aug, tfidf_vectorizer)
+    alpha = get_dynamic_alpha(aug_type)
+    usi = round(alpha * cosine + (1 - alpha) * jaccard, 4)
+
+    rows.append({
+        "original": para,
+        "augmented": aug,
+        "type": aug_type,
+        "cosine": round(cosine, 4),
+        "jaccard": round(jaccard, 4),
+        "alpha": alpha,
+        "USI": usi
+    })
+
+    if idx % 500 == 0 and idx > 0:
+        print(f"Processed {idx} paragraphs...")
+
+# Save final augmented dataset
+df_aug = pd.DataFrame(rows)
+df_aug.to_csv("squad_augmented_18k.csv", index=False)
+print("Saved dataset as 'squad_augmented_18k.csv'")
