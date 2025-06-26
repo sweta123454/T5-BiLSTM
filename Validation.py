@@ -1,0 +1,17 @@
+def evaluate_model(model, dataloader, criterion):
+    model.eval()
+    preds, labels = [], []
+    total_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Evaluating"):
+            outputs = model(
+                batch['input_ids1'], batch['input_ids2'],
+                batch['attention_mask1'], batch['attention_mask2']
+            )
+            loss = criterion(outputs.view(-1), batch['label'].to(device))
+            total_loss += loss.item()
+            preds.extend(outputs.view(-1).cpu().numpy())
+            labels.extend(batch['label'].cpu().numpy())
+
+    avg_loss = total_loss / len(dataloader)
+    return np.array(preds), np.array(labels), avg_loss

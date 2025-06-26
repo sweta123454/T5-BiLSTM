@@ -1,0 +1,35 @@
+# metrics_plotting
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_loss_curves(train_losses, val_losses, title):
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Train vs Validation Loss - {title}")
+    plt.legend()
+    plt.grid(False)
+    plt.tight_layout()
+    plt.savefig(f"{title.replace(' ', '_')}_loss_curve.png")
+    plt.show()
+
+def plot_evaluation_metrics(rmse_list, r2_list, pearson_list, spearman_list, title, mode):
+    x = np.arange(1, len(rmse_list) + 1)
+    plt.figure(figsize=(12, 6))
+    plt.plot(x, rmse_list, label=f"{mode} RMSE")
+    plt.plot(x, r2_list, label=f"{mode} R²")
+    plt.plot(x, pearson_list, label=f"{mode} Pearson")
+    plt.plot(x, spearman_list, label=f"{mode} Spearman")
+    plt.xlabel("Epoch")
+    plt.ylabel("Metric Value")
+    plt.title(f"{mode} Evaluation Metrics - {title}")
+    plt.legend()
+    plt.grid(False)
+    plt.tight_layout()
+    plt.savefig(f"{title.replace(' ', '_')}_{mode.lower()}_evaluation_metrics.png")
+    plt.show()
+
+
