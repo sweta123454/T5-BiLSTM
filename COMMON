@@ -1,1 +1,215 @@
+# github_model_scripts/util
 
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import T5Tokenizer, T5EncoderModel, AutoTokenizer, AutoModel
+from sklearn.metrics import mean_squared_error, r2_score
+from scipy.stats import pearsonr, spearmanr
+import numpy as np
+import re
+
+# Device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ------------------------- Parameter Setup -------------------------
+
+embedding_dim = 768
+projection_dim = 256
+hidden_dim = 128
+num_layers = 2
+bidirectional = True
+input_dim = hidden_dim * 2 # For RNNs
+attn_input_dim = input_dim
+mlp_input_dim = input_dim * 3
+max_seq_length = 128
+grad_clip_val = 1.0  # gradient clipping
+patience = 5   # for early stopping
+
+# ------------------------- Tokenizer -------------------------
+class SimpleTokenizer:
+    def __init__(self, texts, max_len=128):
+        self.max_len = max_len
+        self.word2idx = {'<PAD>': 0, '<UNK>': 1}
+        idx = 2
+        for sentence in texts:
+            for word in self.tokenize(sentence):
+                if word not in self.word2idx:
+                    self.word2idx[word] = idx
+                    idx += 1
+
+    def tokenize(self, text):
+        return re.findall(r'\b\w+\b', text.lower())
+
+    def encode(self, text):
+        tokens = self.tokenize(text)
+        ids = [self.word2idx.get(token, self.word2idx['<UNK>']) for token in tokens]
+        if len(ids) < self.max_len:
+            ids += [self.word2idx['<PAD>']] * (self.max_len - len(ids))
+        else:
+            ids = ids[:self.max_len]
+        return ids
+
+    def vocab_size(self):
+        return len(self.word2idx)
+# ------------------------- Dataset-----------------------------------
+class SimilarityDataset(Dataset):
+    def __init__(self, df, tokenizer, is_transformer=True, max_len=128):
+        self.pairs = df[['original', 'augmented']].values
+        self.labels = df['USI'].values.astype(np.float32)
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.is_transformer = is_transformer
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        text1, text2 = self.pairs[idx]
+        label = self.labels[idx]
+        if self.is_transformer:
+            encoded1 = self.tokenizer(text1, padding='max_length', truncation=True, max_length=self.max_len, return_tensors="pt")
+            encoded2 = self.tokenizer(text2, padding='max_length', truncation=True, max_length=self.max_len, return_tensors="pt")
+            return {
+                'input_ids1': encoded1['input_ids'].squeeze(0),
+                'attention_mask1': encoded1['attention_mask'].squeeze(0),
+                'input_ids2': encoded2['input_ids'].squeeze(0),
+                'attention_mask2': encoded2['attention_mask'].squeeze(0),
+                'label': torch.tensor(label)
+            }
+        else:
+            return {
+                'input_ids1': torch.tensor(self.tokenizer.encode(text1)),
+                'input_ids2': torch.tensor(self.tokenizer.encode(text2)),
+                'label': torch.tensor(label)
+            }
+#---------------------------------- Attention Pooling --------------------------------------------------------
+class AttentionPooling(nn.Module):
+    def __init__(self, input_dim):
+        super(AttentionPooling, self).__init__()
+        self.attention = nn.Linear(input_dim, 1)
+
+    def forward(self, x):
+        weights = torch.softmax(self.attention(x), dim=1)
+        return torch.sum(weights * x, dim=1)
+    
+#--------------------------------Regression Analysis---------------------------------------------------- 
+
+class MLPHead(nn.Module):
+    def __init__(self, input_dim):
+        super(MLPHead, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, 512), nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(512, 128), nn.ReLU(),
+            nn.Linear(128, 1), nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.mlp(x)
+#---------------------------- Model classes-------------------------------------------------
+
+class DistilBertWrapper(nn.Module):
+    def __init__(self):
+        super(DistilBertWrapper, self).__init__()
+        self.encoder = AutoModel.from_pretrained("distilbert-base-uncased")
+        for name, param in self.encoder.named_parameters():
+            if name.startswith("distilbert.transformer.layer.0") or \
+               name.startswith("distilbert.transformer.layer.1") or \
+               name.startswith("distilbert.transformer.layer.2"):
+                param.requires_grad = False
+        self.projection = nn.Linear(embedding_dim, projection_dim)
+        self.attn_pool = AttentionPooling(projection_dim)
+        self.mlp_head = MLPHead(projection_dim * 3)
+
+    def forward(self, input_ids1, input_ids2, attention_mask1, attention_mask2):
+        emb1 = self.projection(self.encoder(input_ids1.to(device), attention_mask=attention_mask1.to(device)).last_hidden_state)
+        emb2 = self.projection(self.encoder(input_ids2.to(device), attention_mask=attention_mask2.to(device)).last_hidden_state)
+        h1 = self.attn_pool(emb1)
+        h2 = self.attn_pool(emb2)
+        fusion = torch.cat([h1, h2, torch.abs(h1 - h2)], dim=1)
+        return self.mlp_head(fusion)
+
+class T5EncoderWrapper(nn.Module):
+    def __init__(self, rnn_type=None):
+        super(T5EncoderWrapper, self).__init__()
+        self.encoder = T5EncoderModel.from_pretrained("t5-base")
+        for name, param in self.encoder.named_parameters():
+            if "block.0" in name or "block.1" in name or "block.2" in name:
+                param.requires_grad = False
+        self.projection = nn.Linear(embedding_dim, projection_dim)
+        self.rnn_type = rnn_type
+        if rnn_type:
+            rnn_cls = {"lstm": nn.LSTM, "gru": nn.GRU, "rnn": nn.RNN, "bilstm": nn.LSTM}[rnn_type]
+            is_bidirectional_rnn = True if rnn_type in ["lstm", "bilstm"] else False # Use a different var name
+            self.rnn = rnn_cls(projection_dim, hidden_dim, batch_first=True, bidirectional=is_bidirectional_rnn)
+            self.output_dim = hidden_dim * (2 if is_bidirectional_rnn else 1)
+        else:
+            self.output_dim = projection_dim
+        self.attn_pool = AttentionPooling(self.output_dim)
+        self.mlp_head = MLPHead(self.output_dim * 3)
+
+    def forward(self, input_ids1, input_ids2, attention_mask1, attention_mask2):
+        emb1 = self.projection(self.encoder(input_ids1.to(device), attention_mask=attention_mask1.to(device)).last_hidden_state)
+        emb2 = self.projection(self.encoder(input_ids2.to(device), attention_mask=attention_mask2.to(device)).last_hidden_state)
+        if self.rnn_type:
+            x1, _ = self.rnn(emb1)
+            x2, _ = self.rnn(emb2)
+        else:
+            x1, x2 = emb1, emb2
+        h1 = self.attn_pool(x1)
+        h2 = self.attn_pool(x2)
+        fusion = torch.cat([h1, h2, torch.abs(h1 - h2)], dim=1)
+        return self.mlp_head(fusion)
+
+class RNNModel(nn.Module):
+    def __init__(self, rnn_type, vocab_size, embedding_dim=128, hidden_dim=128, num_layers=2, bidirectional=True):
+        super(RNNModel, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        rnn_cls = {"lstm": nn.LSTM, "gru": nn.GRU, "rnn": nn.RNN, "bilstm": nn.LSTM}[rnn_type]
+        self.rnn = rnn_cls(embedding_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=bidirectional)
+        self.output_dim = hidden_dim * (2 if bidirectional else 1)
+        self.attn_pool = AttentionPooling(self.output_dim)
+        self.mlp_head = MLPHead(self.output_dim * 3)
+
+    def forward(self, input_ids1, input_ids2, attention_mask1=None, attention_mask2=None):
+        emb1 = self.embedding(input_ids1.to(device))
+        emb2 = self.embedding(input_ids2.to(device))
+
+        x1, _ = self.rnn(emb1)
+        x2, _ = self.rnn(emb2)
+
+        h1 = self.attn_pool(x1)
+        h2 = self.attn_pool(x2)
+        fusion = torch.cat([h1, h2, torch.abs(h1 - h2)], dim=1)
+        return self.mlp_head(fusion)
+
+
+# --------------------EarlyStopping Class---------------------------
+class EarlyStopping:
+    def __init__(self, patience=5):
+        self.patience = patience
+        self.counter = 0
+        self.best_loss = float('inf')
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if val_loss < self.best_loss:
+            self.best_loss = val_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+# ------------------------- Metrics ------------------------------------
+def calculate_metrics(preds, trues):
+    return {
+        "RMSE": np.sqrt(mean_squared_error(trues, preds)),
+        "R2": r2_score(trues, preds),
+        "Pearson": pearsonr(trues, preds)[0],
+        "Spearman": spearmanr(trues, preds)[0]
+    }
+
+def print_eval_metrics(preds, trues):
+    metrics = calculate_metrics(preds, trues)
+    print(f"RMSE: {metrics['RMSE']:.4f}, R2: {metrics['R2']:.4f}, Pearson: {metrics['Pearson']:.4f}, Spearman: {metrics['Spearman']:.4f}")
