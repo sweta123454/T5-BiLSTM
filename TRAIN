@@ -1,1 +1,22 @@
+def train_model(model, dataloader, optimizer, scheduler, criterion):
+    model.train()
+    total_loss = 0.0
+    preds, labels = [], []
+    for batch in tqdm(dataloader, desc="Training"):
+        optimizer.zero_grad()
+        outputs = model(
+            batch['input_ids1'], batch['input_ids2'],
+            batch['attention_mask1'], batch['attention_mask2']
+        )
+        loss = criterion(outputs.view(-1), batch['label'].to(device))
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_val)
+        optimizer.step()
+        scheduler.step()
+        total_loss += loss.item()
 
+        preds.extend(outputs.view(-1).detach().cpu().numpy())
+        labels.extend(batch['label'].cpu().numpy())
+
+    avg_loss = total_loss / len(dataloader)
+    return avg_loss, np.array(preds), np.array(labels)
