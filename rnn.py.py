@@ -4,15 +4,16 @@ from main_module import main
 
 if __name__ == "__main__":
     main(model_type="rnn", epochs=25, batch_size=32, lr=2e-4)
-class RNNModel(nn.Module):
-    def __init__(self, rnn_type, vocab_size, embedding_dim=128, hidden_dim=128, num_layers=2, bidirectional=True):
-        super(RNNModel, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        rnn_cls = {"lstm": nn.LSTM, "gru": nn.GRU, "rnn": nn.RNN, "bilstm": nn.LSTM}[rnn_type]
-        self.rnn = rnn_cls(embedding_dim, hidden_dim, num_layers=num_layers, batch_first=True, bidirectional=bidirectional)
-        self.output_dim = hidden_dim * (2 if bidirectional else 1)
-        self.attn_pool = AttentionPooling(self.output_dim)
-        self.mlp_head = MLPHead(self.output_dim * 3)
+class RNNModel_Modified(nn.Module):
+    def __init__(self, rnn_type="rnn", embedding_dim=embedding_dim, hidden_dim=hiddendim):
+        super(RNNModel_Modified, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim) #vocab_size from simple_tokenizer
+        rnn_cls = {"lstm": nn.LSTM, "gru": nn.GRU, "rnn": nn.RNN, "bilstm": nn.LSTM}[rnn_type]
+        is_bidirectional = True if rnn_type in ["lstm", "bilstm"] else False # Note: RNN is NOT bidirectional by default here, as 'rnn' is not in ['lstm', 'bilstm']
+        self.rnn = rnn_cls(embedding_dim, hidden_dim, batch_first=True, bidirectional=is_bidirectional)
+        self.output_dim = hidden_dim * (2 if is_bidirectional else 1)
+        self.attn_pool = AttentionPooling(self.output_dim)
+        self.mlp_head = MLPHead(self.output_dim * 3)
 
     def forward(self, input_ids1, input_ids2, attention_mask1=None, attention_mask2=None):
         emb1 = self.embedding(input_ids1.to(device))
