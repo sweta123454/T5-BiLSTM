@@ -1,6 +1,6 @@
 
 # ------------------------- BILSTM - Script -------------------------
-from main_module import main  
+from main_module import main 
 
 if __name__ == "__main__":
     main(model_type="bilstm", epochs=25, batch_size=32, lr=2e-4)
