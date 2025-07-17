@@ -8,7 +8,7 @@ def evaluate_model(model, dataloader, criterion):
                 batch['input_ids1'], batch['input_ids2'],
                 batch['attention_mask1'], batch['attention_mask2']
             )
-            loss = criterion(outputs.view(-1), batch['label'].to(device))
+            loss = combined_loss(outputs.view(-1), batch['label'].to(device))
             total_loss += loss.item()
             preds.extend(outputs.view(-1).cpu().numpy())
             labels.extend(batch['label'].cpu().numpy())
