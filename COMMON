@@ -107,6 +107,23 @@ class AttentionPooling(nn.Module):
     #def forward(self, x):
      #   return self.mlp(x)
 
+class SimilarityModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = T5EncoderWrapper()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2 * 3, 512), nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 1),
+            # nn.Sigmoid()
+
+        )
+
+    def forward(self, input_ids1, input_ids2, attention_mask1, attention_mask2):
+        h1 = self.encoder(input_ids1, attention_mask1)
+        h2 = self.encoder(input_ids2, attention_mask2)
+        fusion = torch.cat([h1, h2, torch.abs(h1 - h2)], dim=1)
+        return self.mlp(fusion).squeeze(1)
 
 def combined_loss(pred, target):
     pred = torch.clamp(pred, 0.0, 1.0) 
