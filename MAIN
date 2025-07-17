@@ -28,7 +28,7 @@ class main(nn.Module):
         optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
         total_steps = len(train_loader) * epochs
         scheduler = get_cosine_schedule_with_warmup(optimizer, 0, total_steps)
-        criterion = nn.MSELoss()
+        criterion = nn.MSELoss()+ nn.pearsonLoss()
         early_stopping = EarlyStopping(patience=patience)
 
         train_losses, val_losses = [], []
