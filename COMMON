@@ -126,7 +126,7 @@ class SimilarityModel(nn.Module):
         return self.mlp(fusion).squeeze(1)
 
 def combined_loss(pred, target):
-    pred = torch.clamp(pred, 0.0, 1.0) 
+    #pred = torch.clamp(pred, 0.0, 1.0) 
     mse = nn.MSELoss()(pred, target)
     pred_mean = torch.mean(pred)
     target_mean = torch.mean(target)
