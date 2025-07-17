@@ -29,6 +29,7 @@ class main(nn.Module):
         total_steps = len(train_loader) * epochs
         scheduler = get_cosine_schedule_with_warmup(optimizer, 0, total_steps)
         criterion = nn.MSELoss()+ nn.pearsonLoss()
+        criterion = combined_loss()
         early_stopping = EarlyStopping(patience=patience)
 
         train_losses, val_losses = [], []
